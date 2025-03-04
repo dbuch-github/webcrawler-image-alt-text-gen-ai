@@ -1,20 +1,51 @@
-# Advanced Python Web Crawler
+# WebCrawler Image Analyzer
 
-A powerful web crawling and scraping tool built with Python, Selenium, and BeautifulSoup.
+A powerful web crawling and scraping tool built with Python, Selenium, and BeautifulSoup, designed to thoroughly analyze images and their accessibility information on websites.
 
 ## Features
 
-- Uses Selenium WebDriver for rendering JavaScript and handling dynamic content
-- Mimics real browser behavior to prevent 403 errors
-- Automatically handles GDPR/cookie consent banners in multiple languages
-- Extracts useful content:
-  - Page title
-  - Headlines (H1, H2, H3)
-  - Main text content
-  - Images (URLs and alt text)
-- Follows initial redirects
-- Multi-browser support (Chrome and Firefox with auto-fallback)
-- Optimized for different architectures (including Apple Silicon)
+- **Comprehensive Image Detection**: Finds images from multiple sources:
+  - Standard img tags
+  - CSS backgrounds
+  - Shadow DOM elements
+  - iframes content
+  - JavaScript variables
+  - Responsive images (srcset)
+  - Lazy-loaded images
+  - Gallery and slider components
+- **Advanced Consent Handling**: Automatically detects and accepts cookie/GDPR consent banners in multiple languages
+- **Enhanced Lazy Loading**: Uses multiple scrolling techniques to trigger lazy-loaded content
+- **Multiple Interfaces**: Command line, Streamlit web UI
+- **Browser Support**: Chrome and Firefox with auto-fallback
+- **Rich Content Extraction**: Headlines, text content, and images with detailed metadata
+- **Accessibility Analysis**: Evaluates image alt text presence and quality
+
+## Architecture
+
+This application follows a modular, layered architecture:
+
+```
+src/
+├── core/                # Core business logic layer
+│   ├── models.py        # Domain models
+│   ├── services/        # Service components
+│   └── crawler.py       # Main crawler implementation
+├── infrastructure/      # Infrastructure layer
+│   ├── config.py        # Application configuration
+│   ├── logging_config.py # Logging setup
+│   └── webdriver_factory.py # Browser selection & setup
+└── presentation/        # Presentation layer
+    ├── cli/             # Command-line interfaces
+    └── streamlit/       # Streamlit web UI
+```
+
+### Design Patterns Used
+
+- **Factory Pattern**: For WebDriver creation and configuration
+- **Dependency Injection**: Services are injected into the crawler
+- **Strategy Pattern**: Different strategies for image extraction
+- **Repository Pattern**: For handling image collections
+- **Facade Pattern**: Simple API for complex operations
 
 ## Requirements
 
@@ -39,7 +70,7 @@ conda activate webcrawler
 
 3. Install required packages:
 ```bash
-conda install -c conda-forge selenium beautifulsoup4 requests webdriver-manager firefox geckodriver -y
+pip install -r requirements.txt
 ```
 
 4. Verify installation:
@@ -50,86 +81,72 @@ You should see "Test PASSED" if everything is working correctly.
 
 ## Usage
 
-### Basic Usage
+### Command-Line Interface
 
-```python
-from crawler import scrape_url
-
-# Get all data from a URL (default uses auto browser detection)
-data = scrape_url("https://example.com")
-
-# Specify browser explicitly
-data = scrape_url("https://example.com", browser="firefox")
-
-# Access specific data
-print(data['title'])
-print(data['headlines'])
-print(data['text_content'])
-print(data['images'])
-```
-
-### Individual Functions
-
-```python
-from crawler import get_page_title, get_headlines, get_text_content, get_images
-
-# Get only the title
-title = get_page_title("https://example.com")
-
-# Get only the headlines (with Firefox)
-headlines = get_headlines("https://example.com", browser="firefox")
-
-# Get only the text content (with visible browser)
-text = get_text_content("https://example.com", headless=False)
-
-# Get only the images
-images = get_images("https://example.com")
-```
-
-### Running the Example
-
-The example.py script demonstrates how to use the crawler:
+#### Simple Example
 
 ```bash
-# Run in headless mode with auto browser detection (default)
 python example.py https://example.com
-
-# Run with visible browser
-python example.py https://example.com --no-headless
-
-# Specify browser
-python example.py https://example.com --browser firefox
-
-# Combine options
-python example.py https://example.com --browser chrome --no-headless
 ```
 
-## Web Crawler Class
+Options:
+- `--no-headless`: Run with visible browser
+- `--browser {auto,chrome,firefox}`: Specify browser to use
+- `--json`: Output raw JSON data
 
-For more advanced usage, you can use the WebCrawler class directly:
+#### Advanced Example
+
+```bash
+python complex_example.py https://example.com --no-headless --browser firefox --delay 3 --screenshot --json
+```
+
+Additional options:
+- `--delay SECONDS`: Wait time after handling consent banners
+- `--screenshot`: Take screenshots before and after consent handling (only works with `--no-headless`)
+
+#### Testing
+
+```bash
+python test.py --verbose
+```
+
+### Streamlit Web Interface
+
+```bash
+streamlit run app.py
+```
+
+The Streamlit interface provides a user-friendly way to:
+- Enter URLs to crawl
+- Configure crawler settings
+- View extracted images with thumbnails
+- Analyze image metadata (alt text, size, URL)
+- Filter images by size
+- View detected image sources (CDN, iframe, Shadow DOM, etc.)
+
+### API Usage
 
 ```python
-from crawler import WebCrawler
+from src import WebCrawler, scrape_url, get_images
 
-# Initialize crawler with Firefox in headless mode
-crawler = WebCrawler(headless=True, browser="firefox")
+# Simple usage
+images = get_images("https://example.com")
 
-# Or use auto-detection with a visible browser
-crawler = WebCrawler(headless=False, browser="auto")
-
-# Load a page
+# More control
+crawler = WebCrawler(headless=True, browser="chrome")
 crawler.load_page("https://example.com")
-
-# Get data
-title = crawler.get_page_title()
 headlines = crawler.get_headlines()
 text = crawler.get_text_content()
 images = crawler.get_images()
-
-# Don't forget the driver will be closed automatically when the crawler object is destroyed
-# But you can explicitly close it if needed:
-# crawler.driver.quit()
 ```
+
+## Key Components
+
+- **WebDriverFactory**: Creates and configures browser instances with appropriate settings
+- **PageLoaderService**: Handles page loading, consent banners, and scrolling
+- **ContentExtractorService**: Extracts text content and headlines
+- **ImageExtractorService**: Comprehensive image detection and processing
+- **ScreenshotService**: Captures page screenshots for verification and debugging
 
 ## Error Handling
 
