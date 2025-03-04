@@ -1,6 +1,9 @@
 import time
 import platform
 import logging
+import tempfile
+import re
+from urllib.parse import urlparse, urljoin
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -153,6 +156,7 @@ class WebCrawler:
             # Common class names
             ".//button[contains(@class, 'consent') or contains(@class, 'cookie') or contains(@class, 'accept') or contains(@class, 'agree')]",
             ".//a[contains(@class, 'consent') or contains(@class, 'cookie') or contains(@class, 'accept') or contains(@class, 'agree')]",
+            ".//div[contains(@class, 'consent') or contains(@class, 'cookie') or contains(@class, 'accept') or contains(@class, 'agree')]",
             
             # Common ID patterns
             ".//*[contains(@id, 'consent') or contains(@id, 'cookie') or contains(@id, 'accept') or contains(@id, 'agree')]",
@@ -160,29 +164,65 @@ class WebCrawler:
             # Common text in buttons
             ".//button[contains(text(), 'Accept') or contains(text(), 'Agree') or contains(text(), 'OK') or contains(text(), 'Got it')]",
             ".//button[contains(text(), 'accept cookies') or contains(text(), 'accept all') or contains(text(), 'allow cookies')]",
+            ".//a[contains(text(), 'Accept') or contains(text(), 'Agree') or contains(text(), 'OK') or contains(text(), 'Got it')]",
+            ".//div[contains(text(), 'Accept') or contains(text(), 'Agree') or contains(text(), 'OK') or contains(text(), 'Got it')]",
+            ".//span[contains(text(), 'Accept') or contains(text(), 'Agree') or contains(text(), 'OK') or contains(text(), 'Got it')]",
             
             # Common GDPR/cookie specific buttons (case insensitive)
-            ".//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept all cookies')]",
-            ".//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept necessary cookies')]",
+            ".//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept all cookies')]",
+            ".//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'accept necessary cookies')]",
+            ".//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'allow all')]",
+            ".//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'allow cookies')]",
             
             # German consent buttons
-            ".//button[contains(text(), 'Akzeptieren') or contains(text(), 'Zustimmen') or contains(text(), 'Einverstanden')]",
+            ".//*[contains(text(), 'Akzeptieren') or contains(text(), 'Zustimmen') or contains(text(), 'Einverstanden')]",
+            ".//*[contains(text(), 'Alle akzeptieren') or contains(text(), 'Allen zustimmen'or contains(text(), 'Alles Akzeptieren')]",
             
             # French consent buttons
-            ".//button[contains(text(), 'Accepter') or contains(text(), 'J'accepte')]",
+            ".//*[contains(text(), 'Accepter') or contains(text(), 'J\'accepte')]",
+            
+            # Specific common buttons by role
+            ".//button[@aria-label='Accept cookies']",
+            ".//button[@aria-label='Accept all cookies']",
+            ".//button[@aria-label='Allow cookies']",
+            ".//button[@aria-label='Allow all']",
+            
+            # Specific common buttons by title
+            ".//button[@title='Accept cookies']",
+            ".//button[@title='Accept all cookies']",
+            ".//button[@title='Allow cookies']",
+            ".//button[@title='Allow all']",
         ]
         
         # Try each identifier
+        clicked_something = False
         for xpath in consent_identifiers:
             try:
                 elements = self.driver.find_elements(By.XPATH, xpath)
                 for element in elements:
-                    if element.is_displayed():
-                        element.click()
-                        time.sleep(1)  # Wait for banner to disappear
-                        return
-            except (NoSuchElementException, Exception):
+                    try:
+                        if element.is_displayed():
+                            # Try to scroll to the element to make sure it's visible
+                            self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
+                            time.sleep(0.2)  # Small delay after scrolling
+                            
+                            # Try to click it
+                            element.click()
+                            clicked_something = True
+                            time.sleep(0.5)  # Short wait after click
+                    except Exception as e:
+                        # If direct click fails, try JavaScript click
+                        try:
+                            self.driver.execute_script("arguments[0].click();", element)
+                            clicked_something = True
+                            time.sleep(0.5)  # Short wait after click
+                        except:
+                            pass  # If JS click also fails, continue to next element
+            except Exception:
                 continue
+        
+        # Return true if we clicked something
+        return clicked_something
     
     def get_page_source(self):
         """
@@ -249,32 +289,235 @@ class WebCrawler:
     
     def get_images(self):
         """
-        Extract all images from the page
+        Extract all images from the page using multiple methods
         
         Returns:
             list: List of dictionaries with image information (url, alt text)
         """
         images = []
+        image_urls = set()  # To track unique URLs
         
         try:
+            # Method 1: Find all <img> tags using Selenium
             elements = self.driver.find_elements(By.TAG_NAME, "img")
             
             for element in elements:
                 try:
+                    # Try different attributes where image URLs might be stored
                     src = element.get_attribute("src")
-                    alt = element.get_attribute("alt") or ""
+                    data_src = element.get_attribute("data-src")
+                    data_lazy_src = element.get_attribute("data-lazy-src")
+                    srcset = element.get_attribute("srcset")
                     
-                    if src:
+                    # Get alt text and other metadata
+                    alt = element.get_attribute("alt") or ""
+                    title = element.get_attribute("title") or ""
+                    
+                    # Process the main source if available
+                    if src and src not in image_urls and not src.startswith("data:"):
+                        image_urls.add(src)
                         images.append({
                             'url': src,
-                            'alt': alt
+                            'alt': alt,
+                            'title': title,
+                            'type': 'img'
                         })
+                    
+                    # Process data-src (lazy loading)
+                    if data_src and data_src not in image_urls and not data_src.startswith("data:"):
+                        image_urls.add(data_src)
+                        images.append({
+                            'url': data_src,
+                            'alt': alt,
+                            'title': title,
+                            'type': 'img-lazy'
+                        })
+                    
+                    # Process data-lazy-src (another lazy loading variant)
+                    if data_lazy_src and data_lazy_src not in image_urls and not data_lazy_src.startswith("data:"):
+                        image_urls.add(data_lazy_src)
+                        images.append({
+                            'url': data_lazy_src,
+                            'alt': alt,
+                            'title': title,
+                            'type': 'img-lazy'
+                        })
+                    
+                    # Process srcset (responsive images)
+                    if srcset:
+                        try:
+                            # Parse srcset attribute which can contain multiple URLs
+                            srcset_parts = srcset.split(',')
+                            for part in srcset_parts:
+                                url_width = part.strip().split(' ')
+                                if len(url_width) >= 1:
+                                    srcset_url = url_width[0].strip()
+                                    if srcset_url and srcset_url not in image_urls and not srcset_url.startswith("data:"):
+                                        image_urls.add(srcset_url)
+                                        images.append({
+                                            'url': srcset_url,
+                                            'alt': alt,
+                                            'title': title,
+                                            'type': 'srcset'
+                                        })
+                        except:
+                            pass  # Skip if srcset parsing fails
                 except:
                     continue
+            
+            # Method 2: Find background images in style attributes
+            try:
+                # Find elements with background-image style
+                elements_with_bg = self.driver.find_elements(By.XPATH, "//*[contains(@style, 'background-image')]")
+                
+                for element in elements_with_bg:
+                    try:
+                        style = element.get_attribute("style")
+                        if style and 'url(' in style:
+                            # Extract URL from background-image: url('...')
+                            bg_url_match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style)
+                            if bg_url_match:
+                                bg_url = bg_url_match.group(1)
+                                if bg_url and bg_url not in image_urls and not bg_url.startswith("data:"):
+                                    image_urls.add(bg_url)
+                                    images.append({
+                                        'url': bg_url,
+                                        'alt': element.get_attribute("alt") or element.get_attribute("title") or "",
+                                        'title': element.get_attribute("title") or "",
+                                        'type': 'background'
+                                    })
+                    except:
+                        continue
+            except:
+                pass  # Skip if background image extraction fails
+            
+            # Method 3: Use BeautifulSoup for additional parsing
+            try:
+                soup = BeautifulSoup(self.get_page_source(), 'html.parser')
+                
+                # Find picture elements (modern responsive images)
+                picture_elements = soup.find_all('picture')
+                for picture in picture_elements:
+                    # Get source elements within picture
+                    source_elements = picture.find_all('source')
+                    for source in source_elements:
+                        if source.has_attr('srcset'):
+                            srcset = source['srcset']
+                            srcset_parts = srcset.split(',')
+                            for part in srcset_parts:
+                                url_width = part.strip().split(' ')
+                                if len(url_width) >= 1:
+                                    srcset_url = url_width[0].strip()
+                                    if srcset_url and srcset_url not in image_urls and not srcset_url.startswith("data:"):
+                                        image_urls.add(srcset_url)
+                                        images.append({
+                                            'url': srcset_url,
+                                            'alt': source.get('alt', ''),
+                                            'title': source.get('title', ''),
+                                            'type': 'picture-source'
+                                        })
+                
+                # Find CSS with background images
+                style_tags = soup.find_all('style')
+                for style_tag in style_tags:
+                    style_content = style_tag.string
+                    if style_content:
+                        # Find all background-image: url(...) patterns
+                        bg_urls = re.findall(r"background-image:\s*url\(['\"]?(.*?)['\"]?\)", style_content)
+                        for bg_url in bg_urls:
+                            if bg_url and bg_url not in image_urls and not bg_url.startswith("data:"):
+                                image_urls.add(bg_url)
+                                images.append({
+                                    'url': bg_url,
+                                    'alt': '',
+                                    'title': '',
+                                    'type': 'css-background'
+                                })
+            except Exception as e:
+                print(f"Error in BeautifulSoup parsing: {str(e)}")
+                
+            # Method 4: Check for common image galleries
+            try:
+                # Look for data-attributes commonly used in galleries
+                gallery_elements = self.driver.find_elements(
+                    By.XPATH, 
+                    "//*[contains(@class, 'gallery') or contains(@id, 'gallery') or contains(@data-gallery, 'true')]"
+                )
+                
+                for gallery in gallery_elements:
+                    # Find all elements with data-src, data-full, data-image attributes
+                    data_elements = gallery.find_elements(
+                        By.XPATH, 
+                        ".//*[@data-src or @data-full or @data-image or @data-lazy or @data-thumb]"
+                    )
+                    
+                    for element in data_elements:
+                        try:
+                            # Check various data attributes for image URLs
+                            for attr in ['data-src', 'data-full', 'data-image', 'data-lazy', 'data-thumb']:
+                                url = element.get_attribute(attr)
+                                if url and url not in image_urls and not url.startswith("data:"):
+                                    image_urls.add(url)
+                                    images.append({
+                                        'url': url,
+                                        'alt': element.get_attribute("alt") or element.get_attribute("title") or "",
+                                        'title': element.get_attribute("title") or "",
+                                        'type': f'gallery-{attr}'
+                                    })
+                        except:
+                            continue
+            except:
+                pass  # Skip if gallery extraction fails
+            
+            # Process and normalize URLs
+            normalized_images = []
+            base_url = self.driver.current_url
+            
+            for img in images:
+                try:
+                    # Handle relative URLs
+                    if img['url'].startswith('//'):  # Protocol-relative URL
+                        img['url'] = 'https:' + img['url']
+                    elif img['url'].startswith('/'):  # Root-relative URL
+                        parsed_base = urlparse(base_url)
+                        img['url'] = f"{parsed_base.scheme}://{parsed_base.netloc}{img['url']}"
+                    elif not img['url'].startswith(('http://', 'https://')):  # Relative URL
+                        img['url'] = urljoin(base_url, img['url'])
+                    
+                    normalized_images.append(img)
+                except:
+                    # Keep the original URL if normalization fails
+                    normalized_images.append(img)
+            
+            return normalized_images
+            
         except Exception as e:
             print(f"Error extracting images: {str(e)}")
+            return images
         
-        return images
+    def take_screenshot(self, output_path=None):
+        """
+        Take a screenshot of the current page
+        
+        Args:
+            output_path (str, optional): Path to save the screenshot. If None, a temporary file is created.
+            
+        Returns:
+            str: Path to the screenshot file
+        """
+        try:
+            if output_path is None:
+                # Create a temporary file with .png extension
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                output_path = temp_file.name
+                temp_file.close()
+            
+            # Take screenshot
+            self.driver.save_screenshot(output_path)
+            return output_path
+        except Exception as e:
+            print(f"Error taking screenshot: {str(e)}")
+            return None
 
 
 # Convenience functions
