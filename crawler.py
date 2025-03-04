@@ -489,11 +489,173 @@ class WebCrawler:
                     # Keep the original URL if normalization fails
                     normalized_images.append(img)
             
-            return normalized_images
+            # Deduplicate responsive images (same image in different sizes)
+            deduplicated_images = self._deduplicate_responsive_images(normalized_images)
+            
+            # Add debug information about deduplication
+            print(f"Found {len(images)} total images, normalized to {len(normalized_images)}, deduplicated to {len(deduplicated_images)}")
+            
+            return deduplicated_images
             
         except Exception as e:
             print(f"Error extracting images: {str(e)}")
             return images
+        
+    def _deduplicate_responsive_images(self, images):
+        """
+        Identify and deduplicate responsive images (same image in different sizes)
+        
+        Args:
+            images (list): List of image dictionaries
+            
+        Returns:
+            list: Deduplicated list of images with the best version of each image
+        """
+        if not images:
+            return []
+            
+        # Group images by base filename (without size indicators)
+        image_groups = {}
+        
+        for img in images:
+            # Skip if URL is missing
+            if not img.get('url'):
+                continue
+                
+            url = img['url']
+            
+            # Extract the base part of the filename
+            try:
+                # Parse the URL
+                parsed_url = urlparse(url)
+                path = parsed_url.path
+                
+                # Get the filename
+                filename = path.split('/')[-1]
+                
+                # Remove common size indicators from filename
+                # Examples: image-800x600.jpg, image_large.png, image-thumbnail.jpg, image@2x.jpg
+                base_name = re.sub(r'[-_](\d+x\d+|small|medium|large|thumbnail|thumb|\d+w|\d+h|\d+px|@\d+x)\b', '', filename)
+                base_name = re.sub(r'@\d+x', '', base_name)  # Handle @2x, @3x notation
+                
+                # Create a signature based on the path without size indicators
+                path_signature = path.replace(filename, base_name)
+                
+                # Also consider the alt text for grouping
+                alt_text = img.get('alt', '')
+                
+                # Create a group key based on the path and alt text
+                # This helps group images that are the same but have different sizes
+                group_key = f"{parsed_url.netloc}{path_signature}_{alt_text}"
+                
+                if group_key not in image_groups:
+                    image_groups[group_key] = []
+                    
+                image_groups[group_key].append(img)
+            except:
+                # If we can't parse the URL, just add it as is
+                random_key = f"unparsed_{len(image_groups)}"
+                if random_key not in image_groups:
+                    image_groups[random_key] = []
+                image_groups[random_key].append(img)
+        
+        # Select the best image from each group
+        deduplicated = []
+        
+        for group_key, group_images in image_groups.items():
+            if len(group_images) == 1:
+                # If there's only one image in the group, add it as is
+                deduplicated.append(group_images[0])
+            else:
+                # For multiple images, select the best one based on heuristics
+                best_image = self._select_best_image(group_images)
+                deduplicated.append(best_image)
+        
+        return deduplicated
+    
+    def _select_best_image(self, images):
+        """
+        Select the best image from a group of similar images
+        
+        Args:
+            images (list): List of similar image dictionaries
+            
+        Returns:
+            dict: The best image from the group
+        """
+        if not images:
+            return None
+            
+        # If there's only one image, return it
+        if len(images) == 1:
+            return images[0]
+        
+        # Score each image based on various factors
+        scored_images = []
+        
+        for img in images:
+            score = 0
+            url = img['url']
+            
+            # Prefer images with meaningful alt text
+            if img.get('alt') and len(img.get('alt', '')) > 3:
+                score += 10
+                
+            # Prefer images with title
+            if img.get('title') and len(img.get('title', '')) > 3:
+                score += 5
+                
+            # Prefer standard images over background images
+            if img.get('type') == 'img':
+                score += 15
+            elif img.get('type') == 'srcset':
+                score += 10
+            elif 'background' in img.get('type', ''):
+                score += 5
+                
+            # Look for size indicators in the URL
+            size_match = re.search(r'(\d+)x(\d+)', url)
+            if size_match:
+                width = int(size_match.group(1))
+                height = int(size_match.group(2))
+                
+                # Prefer medium-sized images (not too small, not too large)
+                # Ideal size around 800-1200px width
+                if 800 <= width <= 1200:
+                    score += 20
+                elif 500 <= width < 800:
+                    score += 15
+                elif 1200 < width <= 1600:
+                    score += 10
+                elif 300 <= width < 500:
+                    score += 5
+                elif width > 1600:
+                    score += 3  # Very large images might be too big
+                # Small images get no bonus
+                
+            # Look for size indicators in the filename
+            if 'large' in url.lower():
+                score += 8
+            elif 'medium' in url.lower():
+                score += 12
+            elif 'small' in url.lower() or 'thumbnail' in url.lower() or 'thumb' in url.lower():
+                score -= 5  # Penalize thumbnails
+                
+            # Prefer original images over scaled ones
+            if '@2x' in url or '@3x' in url:
+                score -= 3
+                
+            # Prefer images with standard extensions
+            if url.lower().endswith(('.jpg', '.jpeg', '.png')):
+                score += 5
+            elif url.lower().endswith('.webp'):
+                score += 3
+                
+            scored_images.append((score, img))
+        
+        # Sort by score (highest first) and return the best image
+        scored_images.sort(reverse=True, key=lambda x: x[0])
+        return scored_images[0][1]
         
     def take_screenshot(self, output_path=None):
         """
