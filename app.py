@@ -145,16 +145,24 @@ def main():
         url = st.text_input("Enter website URL:", placeholder="https://example.com")
     
     with col2:
-        min_filesize = st.number_input("Minimum image size (KB):", min_value=0, value=10, step=5)
+        min_filesize = st.number_input("Minimum image size (KB):", min_value=0, value=0, step=5)
     
     # Advanced options in an expander
     with st.expander("Advanced Options"):
         headless = st.checkbox("Headless Mode", value=True, help="Run browser in background without UI")
         browser_option = st.selectbox("Browser", options=["auto", "chrome", "firefox"], index=0, help="Select which browser to use")
         consent_delay = st.slider("Consent Handling Delay (seconds)", min_value=1, max_value=10, value=2, help="Time to wait after handling consent dialogs")
+        check_iframes = st.checkbox("Check iframes for images", value=True, help="Search for images within iframes")
+        detect_cdn = st.checkbox("Enhanced CDN detection", value=True, help="Detect images from CDN domains and subdomains")
+        enhanced_scrolling = st.checkbox("Enhanced scrolling", value=True, help="Use advanced scrolling techniques to find more lazy-loaded images")
+        check_shadow_dom = st.checkbox("Check Shadow DOM", value=True, help="Look for images in Shadow DOM elements")
+        min_wait_time = st.slider("Minimum wait time (seconds)", min_value=1, max_value=10, value=3, help="Minimum time to wait for page to load completely")
+    
+    # Add a scan button instead of automatically starting the crawler
+    scan_button = st.button("Scan Images", type="primary", use_container_width=True)
     
     # Add a spinner during processing
-    if url:
+    if url and scan_button:
         with st.spinner("Crawling website and analyzing images..."):
             # Initialize the crawler directly for more control
             crawler_instance = WebCrawler(headless=headless, browser=browser_option)
@@ -204,26 +212,67 @@ def main():
                     with tabs[0]:
                         if headlines['h1']:
                             for h in headlines['h1']:
-                                st.markdown(f"### {h}")
+                                # Create a clickable link that opens in a new tab
+                                if isinstance(h, dict):
+                                    st.markdown(f"<a href='{h['url']}' target='_blank'>{h['text']}</a>", unsafe_allow_html=True)
+                                else:
+                                    # Backward compatibility for old format
+                                    st.write(h)
                         else:
                             st.info("No H1 headlines found")
                     
                     with tabs[1]:
                         if headlines['h2']:
                             for h in headlines['h2']:
-                                st.markdown(f"## {h}")
+                                # Create a clickable link that opens in a new tab
+                                if isinstance(h, dict):
+                                    st.markdown(f"<a href='{h['url']}' target='_blank'>{h['text']}</a>", unsafe_allow_html=True)
+                                else:
+                                    # Backward compatibility for old format
+                                    st.write(h)
                         else:
                             st.info("No H2 headlines found")
                     
                     with tabs[2]:
                         if headlines['h3']:
                             for h in headlines['h3']:
-                                st.markdown(f"# {h}")
+                                # Create a clickable link that opens in a new tab
+                                if isinstance(h, dict):
+                                    st.markdown(f"<a href='{h['url']}' target='_blank'>{h['text']}</a>", unsafe_allow_html=True)
+                                else:
+                                    # Backward compatibility for old format
+                                    st.write(h)
                         else:
                             st.info("No H3 headlines found")
                 
-                # Get images
+                # Get images with enhanced detection features
+                
+                # Use the enhanced scrolling technique if selected
+                if enhanced_scrolling:
+                    # Use the improved scrolling method for better lazy-loading detection
+                    crawler_instance._scroll_for_lazy_content()
+                else:
+                    # Use the basic scrolling method
+                    crawler_instance.scroll_page()
+                
+                # Wait for the page to stabilize and load all content
+                with st.spinner(f"Waiting {min_wait_time} seconds for all content to load..."):
+                    time.sleep(min_wait_time)
+                
+                # Wait for network to be idle (if the method exists)
+                try:
+                    crawler_instance._wait_for_network_idle(timeout=5, wait_time=1.0)
+                except Exception as e:
+                    st.warning(f"Network idle detection not available: {str(e)}")
+                
+                # Get images from main page
                 images_data = crawler_instance.get_images()
+                
+                # Also check for images in iframes if selected
+                if check_iframes:
+                    iframe_images = crawler_instance.get_images_from_iframes()
+                    if iframe_images:
+                        images_data.extend(iframe_images)
             
             if not success:
                 # Error already displayed above
@@ -233,13 +282,22 @@ def main():
             else:
                 # Process images to add file size
                 processed_images = []
+                skipped_images = 0
+                error_images = 0
                 
                 for img in images_data:
                     size_kb = get_filesize(img['url'])
                     img['size_kb'] = size_kb
+                    
+                    # Count errors
+                    if size_kb == 0:
+                        error_images += 1
+                        
                     # Only add images that meet the minimum file size requirement
                     if size_kb >= min_filesize:
                         processed_images.append(img)
+                    else:
+                        skipped_images += 1
                 
                 # Create DataFrame
                 df = pd.DataFrame(processed_images)
@@ -253,8 +311,49 @@ def main():
                 if df.empty:
                     st.warning(f"No images found that meet the minimum size requirement of {min_filesize} KB")
                 else:
-                    # Display image count
-                    st.info(f"Found {len(df)} images with size >= {min_filesize} KB (filtered from {len(images_data)} total images)")
+                    # Display image count with detailed information
+                    cdn_count = sum(1 for img in processed_images if 'from_cdn' in img and img['from_cdn'])
+                    iframe_count = sum(1 for img in processed_images if 'from_iframe' in img and img['from_iframe'])
+                    shadow_dom_count = sum(1 for img in processed_images if 'from_shadow_dom' in img and img['from_shadow_dom'])
+                    js_count = sum(1 for img in processed_images if 'type' in img and 'js-' in img['type'])
+                    background_count = sum(1 for img in processed_images if 'type' in img and 'background' in img['type'])
+                    slider_count = sum(1 for img in processed_images if 'type' in img and 'slider' in img['type'])
+                    
+                    # Show detailed summary
+                    st.info(f"Found {len(df)} images with size >= {min_filesize} KB")
+                    
+                    # Create a detailed summary expander
+                    with st.expander("Detailed Image Summary"):
+                        st.markdown(f"""
+                        ### Image Detection Summary
+                        - **Total images detected**: {len(images_data)}
+                        - **Images meeting size criteria**: {len(df)}
+                        - **Images filtered out by size**: {skipped_images}
+                        - **Images with size errors**: {error_images}
+                        
+                        > Note: The terminal debug log shows all detected images before size filtering.
+                        """)
+                    
+                    # Create columns for the statistics
+                    stat_cols = st.columns(3)
+                    
+                    with stat_cols[0]:
+                        if cdn_count > 0:
+                            st.success(f"✅ {cdn_count} images from CDN domains")
+                        if iframe_count > 0:
+                            st.success(f"✅ {iframe_count} images from iframes")
+                    
+                    with stat_cols[1]:
+                        if shadow_dom_count > 0:
+                            st.success(f"✅ {shadow_dom_count} images from Shadow DOM")
+                        if js_count > 0:
+                            st.success(f"✅ {js_count} images from JavaScript")
+                    
+                    with stat_cols[2]:
+                        if background_count > 0:
+                            st.success(f"✅ {background_count} background images")
+                        if slider_count > 0:
+                            st.success(f"✅ {slider_count} images from sliders/carousels")
                     
                     # Display images in a table
                     st.subheader("Images")
@@ -290,10 +389,42 @@ def main():
                         with col2:
                             st.subheader("URL")
                             st.write(row['url'])
+                            
+                            # Show all relevant badges
+                            badges = []
+                            if 'from_cdn' in row and row['from_cdn']:
+                                badges.append("🌐 CDN")
+                            if 'from_iframe' in row and row['from_iframe']:
+                                badges.append("🖼️ iframe")
+                            if 'from_shadow_dom' in row and row['from_shadow_dom']:
+                                badges.append("🔒 Shadow DOM")
+                            if 'type' in row:
+                                if 'background' in row['type']:
+                                    badges.append("🎨 Background")
+                                if 'slider' in row['type'] or 'carousel' in row['type']:
+                                    badges.append("🔄 Slider")
+                                if 'js-' in row['type']:
+                                    badges.append("📜 JavaScript")
+                                if 'gallery' in row['type']:
+                                    badges.append("🖼️ Gallery")
+                            
+                            if badges:
+                                st.markdown(f"<div style='display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;'>{' '.join([f'<span style="background-color:#e6f7ff;color:#1890ff;padding:2px 8px;border-radius:4px;font-size:12px;margin-bottom:3px;">{badge}</span>' for badge in badges])}</div>", unsafe_allow_html=True)
                         
                         with col3:
                             st.subheader("Alt Text")
-                            st.write(row['alt'] if row['alt'] else "No alt text")
+                            
+                            # Show alt text or aria-label if available
+                            if row.get('alt'):
+                                st.write(row['alt'])
+                            elif row.get('aria_label'):
+                                st.write(f"[aria-label] {row['aria_label']}")
+                            else:
+                                st.write("No alt text or aria-label")
+                                
+                            # Show image type for debugging
+                            if 'type' in row:
+                                st.markdown(f"<small style='color:#888;'>Type: {row['type']}</small>", unsafe_allow_html=True)
                         
                         with col4:
                             st.subheader("Size")
